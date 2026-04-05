@@ -1,122 +1,271 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <title>DJ Loop</title>
-  <style>
-    body {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      background-color: #181818;
-      color: white;
-    }
-
-    #controls {
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-    }
-
-    .loopBtn {
-      padding: 15px 25px;
-      margin: 5px;
-      font-size: 18px;
-      cursor: pointer;
-      color: white;
-      user-select: none;
-      background-color: #444;
-      border: 2px solid #fff;
-      border-radius: 5px;
-      transition: background-color 0.2s;
-    }
-
-    .loopBtn:active {
-      background-color: #666;
-    }
-    
-  </style>
+    <meta charset="UTF-8">
+    <title>Perlit Mixer V2</title>
+    <style>
+        :root { --bg-color: #000; --text-color: #fff; }
+        button, .knob-container, .handle {
+            touch-action: none; 
+            -webkit-user-select: none; 
+        }
+        body {
+            background-color: var(--bg-color); color: var(--text-color);
+            font-family: 'Segoe UI', sans-serif; margin: 0; overflow: hidden; 
+            width: 100vw; height: 100vh; transition: transform 0.6s ease;
+        }
+        body.rotated {
+            transform: rotate(-90deg); transform-origin: center;
+            width: 100vh; height: 100vw; position: absolute;
+            top: 50%; left: 50%; translate: -50% -50%;
+        }
+        .dj-window {
+            position: absolute; border: 2px solid; border-radius: 20px;
+            background: rgba(0, 0, 0, 0.9); padding: 20px; min-width: 220px;
+            box-shadow: 0 0 20px currentColor; opacity: 0;
+            transform: translateY(20px); transition: opacity 0.5s, transform 0.5s;
+            user-select: none; z-index: 10;
+        }
+        .dj-window.visible { opacity: 1; transform: translateY(0); }
+        .handle {
+            position: absolute; top: 12px; right: 12px; width: 30px; height: 30px;
+            background: #fff; color: #000; display: flex; align-items: center;
+            justify-content: center; cursor: move; border-radius: 6px; font-weight: bold;
+        }
+        .content { margin-top: 30px; display: flex; flex-direction: column; gap: 15px; }
+        button {
+            background: transparent; border: 2px solid #fff; color: #fff;
+            padding: 15px; font-size: 16px; font-weight: bold; cursor: pointer;
+            transition: all 0.1s; border-radius: 10px; min-height: 55px;
+        }
+        button:active, button.active {
+            background: #fff !important; color: #000 !important;
+            box-shadow: 0 0 30px #fff; transform: scale(0.96);
+        }
+        input[type="range"] { width: 100%; cursor: pointer; accent-color: #fff; }
+        .grid-2x2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        #rotate-btn {
+            position: fixed; bottom: 30px; right: 30px; z-index: 9999;
+            border-color: #0ff; color: #0ff;
+        }
+        canvas { width: 100%; height: 80px; background: #050505; border-radius: 8px; }
+        .knob-container { text-align: center; cursor: ns-resize; }
+        .knob-visual {
+            width: 70px; height: 70px; border: 3px solid #fff;
+            border-radius: 50%; margin: 10px auto; position: relative;
+        }
+        .knob-pointer {
+            position: absolute; width: 5px; height: 25px; background: #fff;
+            bottom: 50%; left: calc(50% - 2.5px); transform-origin: bottom center;
+        }
+    </style>
 </head>
 <body>
 
-  <audio id="track" src="YOUR_FILE.mp3" preload="auto" controls></audio>
+<button id="rotate-btn">ROTATE 90°</button>
 
-  <div id="controls">
-    <!-- <button class="loopBtn" data-loop="2">1/2</button>
-    <button class="loopBtn" data-loop="4">1/4</button>
-    <button class="loopBtn" data-loop="8">1/8</button>
-    <button class="loopBtn" data-loop="16">1/16</button>
-    <button class="loopBtn" data-loop="3">1/3</button> -->
+<script>
+window.oncontextmenu = function(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    return false;
+};
+document.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('touchstart', (e) => {
+        if (e.touches.length > 1) e.preventDefault();
+    }, {passive: false});
+});
 
-    <!-- I DID THIS BECAUSE OF WEB DELAY -->
-    <button class="loopBtn" data-loop="3">1/2</button>
-    <button class="loopBtn" data-loop="6">1/4</button>
-    <button class="loopBtn" data-loop="12">1/8</button>
-    <button class="loopBtn" data-loop="24">1/16</button>
-    <!-- <button class="loopBtn" data-loop="9">1/3</button> -->
-  </div>
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let audioBuffer = null, sourceNode = null;
+const gainNode = audioCtx.createGain();
+const lowShelf = audioCtx.createBiquadFilter();
+const analyser = audioCtx.createAnalyser();
+const delayNode = audioCtx.createDelay(2.0), delayGain = audioCtx.createGain();
 
-  <script>
-    const audio = document.getElementById('track');
-    const loopBtns = document.querySelectorAll('.loopBtn');
+let currentBPM = 128, isPlaying = false, startTime = 0, pauseOffset = 0, isRotated = false;
 
- 
-    const bpm = 128; 
-    const beatDuration = 60 / bpm;
+delayGain.gain.value = 0;
+gainNode.connect(lowShelf); gainNode.connect(delayNode);
+delayNode.connect(delayGain); delayGain.connect(lowShelf);
+lowShelf.connect(analyser); analyser.connect(audioCtx.destination);
+lowShelf.type = "lowshelf"; lowShelf.frequency.value = 250;
 
-    let loopStart = 0;
-    let isLooping = false;
-    let loopTime = 0; 
-    let loopInterval = null;
-    let loopFactor = 4; 
+function playTrack(offset = 0, isLoopCall = false) {
+    if (sourceNode) try { sourceNode.stop(); } catch(e) {}
+    sourceNode = audioCtx.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.connect(gainNode);
+    sourceNode.start(0, Math.max(0, offset % audioBuffer.duration));
+    if (!isLoopCall) startTime = audioCtx.currentTime - offset;
+}
 
-    
-    loopBtns.forEach(btn => {
-      btn.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        loopFactor = parseInt(btn.getAttribute('data-loop'), 10); 
-        loopStart = audio.currentTime;
-        loopTime = 0;
-        isLooping = true;
-
-        // Запускаем отсчёт времени удержания
-        loopInterval = setInterval(() => {
-          loopTime += 0.01;
-        }, 10);
-
-        requestAnimationFrame(loopFrame); 
-      });
-
-     
-      btn.addEventListener('pointerup', stopLooping);
-    });
-
-    
-    function loopFrame() {
-      if (!isLooping) return;
-
-      const now = audio.currentTime;
-      const loopLength = beatDuration / loopFactor;
-
-      if (now - loopStart >= loopLength) {
-        audio.currentTime = loopStart; 
-        audio.play();
-      }
-
-      requestAnimationFrame(loopFrame); 
+class DJWindow {
+    constructor(title, color, x, y) {
+        this.el = document.createElement('div');
+        this.el.className = 'dj-window'; this.el.style.color = color;
+        this.el.style.left = x + 'px'; this.el.style.top = y + 'px';
+        this.handle = document.createElement('div');
+        this.handle.className = 'handle'; this.handle.innerText = 'x';
+        this.content = document.createElement('div');
+        this.content.className = 'content';
+        this.el.appendChild(this.handle); this.el.appendChild(this.content);
+        document.body.appendChild(this.el);
+        this.initDrag();
+        setTimeout(() => this.el.classList.add('visible'), 100);
     }
-
-   
-    function stopLooping() {
-      isLooping = false;
-      clearInterval(loopInterval);
-      audio.currentTime += loopTime; 
-      audio.play();
+    initDrag() {
+        let isDragging = false, sX, sY, iX, iY;
+        this.handle.onpointerdown = (e) => {
+            isDragging = true; sX = e.clientX; sY = e.clientY;
+            iX = this.el.offsetLeft; iY = this.el.offsetTop;
+            this.el.style.zIndex = 1000; this.handle.setPointerCapture(e.pointerId);
+        };
+        this.handle.onpointermove = (e) => {
+            if (!isDragging) return;
+            let dx = e.clientX - sX, dy = e.clientY - sY;
+            if (isRotated) { let t = dx; dx = dy; dy = -t; }
+            this.el.style.left = (iX + dx) + 'px'; this.el.style.top = (iY + dy) + 'px';
+        };
+        this.handle.onpointerup = () => isDragging = false;
     }
-  </script>
+}
 
+// file
+const winFile = new DJWindow('FILE', '#0ff', 30, 30);
+const fileInp = document.createElement('input'); fileInp.type = 'file';
+winFile.content.appendChild(fileInp);
+const winSeek = new DJWindow('SEEKER', '#fff', 30, 140);
+const seekRange = document.createElement('input');
+seekRange.type = 'range'; seekRange.min = 0; seekRange.step = 0.1;
+winSeek.content.appendChild(seekRange);
+
+fileInp.onchange = (e) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        audioCtx.decodeAudioData(ev.target.result, (buf) => { audioBuffer = buf; seekRange.max = buf.duration; });
+    };
+    reader.readAsArrayBuffer(e.target.files[0]);
+};
+seekRange.oninput = () => { if(audioBuffer) { pauseOffset = parseFloat(seekRange.value); if(isPlaying) playTrack(pauseOffset); } };
+
+// bpm
+const winBPM = new DJWindow('BPM', '#f0f', 300, 30);
+const bpmVal = document.createElement('div'); bpmVal.style.fontSize = '24px'; bpmVal.style.textAlign = 'center'; bpmVal.innerText = currentBPM;
+const bpmRange = document.createElement('input'); bpmRange.type = 'range'; bpmRange.min = 30; bpmRange.max = 256; bpmRange.value = 128;
+winBPM.content.appendChild(bpmVal); winBPM.content.appendChild(bpmRange);
+bpmRange.oninput = () => { currentBPM = bpmRange.value; bpmVal.innerText = currentBPM; };
+
+// scope
+const winVis = new DJWindow('SCOPE', '#0f0', 300, 190);
+const canvas = document.createElement('canvas'); winVis.content.appendChild(canvas);
+const ctx = canvas.getContext('2d');
+function draw() {
+    requestAnimationFrame(draw);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data); ctx.clearRect(0,0,canvas.width,canvas.height);
+    data.forEach((v, i) => { ctx.fillStyle = '#0f0'; ctx.fillRect(i*4, 80 - v/3, 3, v/3); });
+}
+draw();
+
+// control
+const winCtrl = new DJWindow('PLAY', '#ff0', 30, 260);
+const playBtn = document.createElement('button'); playBtn.innerText = 'PLAY / PAUSE';
+winCtrl.content.appendChild(playBtn);
+playBtn.onclick = () => {
+    if (!audioBuffer) return;
+    if (isPlaying) { pauseOffset = audioCtx.currentTime - startTime; sourceNode.stop(); isPlaying = false; playBtn.classList.remove('active'); }
+    else { playTrack(pauseOffset); isPlaying = true; playBtn.classList.add('active'); }
+};
+
+// roll
+const winLoops = new DJWindow('ROLL', '#f60', 570, 30);
+const loopGrid = document.createElement('div'); loopGrid.className = 'grid-2x2';
+winLoops.content.appendChild(loopGrid);
+let loopInt = null;
+[2, 4, 8, 16, 32, 64].forEach(div => {
+    const b = document.createElement('button'); b.innerText = '1/' + div;
+    b.onpointerdown = () => {
+        if (!isPlaying) return;
+        b.classList.add('active');
+        const slice = (60/currentBPM) * (4/div);
+        const loopPos = audioCtx.currentTime - startTime;
+        loopInt = setInterval(() => playTrack(loopPos, true), slice * 1000);
+    };
+    b.onpointerup = () => {
+        b.classList.remove('active'); clearInterval(loopInt);
+        if (isPlaying) playTrack(audioCtx.currentTime - startTime); 
+    };
+    loopGrid.appendChild(b);
+});
+
+// bass
+const winBass = new DJWindow('BASS', '#90f', 570, 250);
+const bassCont = document.createElement('div'); bassCont.className = 'knob-container';
+bassCont.innerHTML = `<div class="knob-visual"><div class="knob-pointer"></div></div><div class="knob-value">0 dB</div>`;
+winBass.content.appendChild(bassCont);
+const bPointer = bassCont.querySelector('.knob-pointer'), bVal = bassCont.querySelector('.knob-value');
+bassCont.onpointerdown = (e) => {
+    let sY = e.clientY, sX = e.clientX;
+    const move = (m) => {
+        let diff = isRotated ? (m.clientX - sX) : (sY - m.clientY);
+        let g = Math.max(-24, Math.min(24, diff / 2));
+        lowShelf.gain.setTargetAtTime(g, audioCtx.currentTime, 0.05);
+        bPointer.style.transform = `rotate(${g*6}deg)`; bVal.innerText = Math.round(g)+' dB';
+    };
+    const up = () => { 
+        lowShelf.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+        bPointer.style.transform = 'rotate(0deg)'; bVal.innerText = '0 dB';
+        window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+};
+
+// volume
+const winVol = new DJWindow('VOLUME', '#0f6', 840, 30);
+const volCont = document.createElement('div'); volCont.className = 'knob-container';
+volCont.innerHTML = `<div class="knob-visual"><div class="knob-pointer" style="transform: rotate(0deg)"></div></div><div class="knob-value">100%</div>`;
+winVol.content.appendChild(volCont);
+const vPointer = volCont.querySelector('.knob-pointer'), vVal = volCont.querySelector('.knob-value');
+let currentVolDeg = 0;
+
+volCont.ondblclick = () => {
+    currentVolDeg = 0; vPointer.style.transform = 'rotate(0deg)';
+    gainNode.gain.setTargetAtTime(1.0, audioCtx.currentTime, 0.05); vVal.innerText = '100%';
+};
+
+volCont.onpointerdown = (e) => {
+    let sY = e.clientY, sX = e.clientX, startDeg = currentVolDeg;
+    const move = (m) => {
+        let diff = isRotated ? (m.clientX - sX) : (sY - m.clientY);
+        currentVolDeg = Math.max(-150, Math.min(150, startDeg + diff * 2));
+        let vol = (currentVolDeg + 150) / 300 * 2; // 0 to 2.0 (200%)
+        gainNode.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.05);
+        vPointer.style.transform = `rotate(${currentVolDeg}deg)`;
+        vVal.innerText = Math.round(vol * 100) + '%';
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+};
+
+// fidget
+const winFid = new DJWindow('FIDGET', '#fff', 840, 250);
+const fGrid = document.createElement('div'); fGrid.className = 'grid-2x2';
+for(let i=0; i<4; i++) { const b = document.createElement('button'); b.innerText = '•'; b.style.height = '70px'; fGrid.appendChild(b); }
+winFid.content.appendChild(fGrid);
+
+// delay
+const winFX = new DJWindow('DELAY', '#f00', 30, 420);
+const delBtn = document.createElement('button'); delBtn.innerText = 'HOLD DELAY 1/12';
+winFX.content.appendChild(delBtn);
+delBtn.onpointerdown = () => { 
+    const bLen = 60/currentBPM; delayNode.delayTime.value = bLen * (4/12);
+    delBtn.classList.add('active'); delayGain.gain.setTargetAtTime(0.6, audioCtx.currentTime, 0.01); 
+};
+delBtn.onpointerup = () => { delBtn.classList.remove('active'); delayGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05); };
+
+document.getElementById('rotate-btn').onclick = () => { isRotated = !isRotated; document.body.classList.toggle('rotated'); };
+setInterval(() => { if(isPlaying && audioBuffer && !seekRange.matches(':active')) seekRange.value = (audioCtx.currentTime - startTime) % audioBuffer.duration; }, 100);
+</script>
 </body>
 </html>
